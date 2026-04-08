@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Photo Studio PRO - Sheet Print Ready</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+body{margin:0;font-family:Arial;background:#eef2f7;}
+.main{display:flex;height:100vh;}
+.sidebar{
+    width:260px; background:#1e293b; color:white; padding:15px; overflow:auto;
+}
+.sidebar h3{margin:10px 0 5px 0;font-size:14px;}
+.sidebar input[type="file"],
+.sidebar input[type="range"],
+.sidebar input[type="number"],
+.sidebar input[type="color"],
+.sidebar button{
+    width:90%; margin:4px 0; padding:4px; font-size:12px; box-sizing:border-box;
+}
+.editor{flex:1; display:flex; justify-content:center; align-items:center; background:white;}
+.sheetBox{width:300px;background:#f1f5f9;padding:10px;text-align:center;}
+canvas{border:1px solid #ccc;width:100%;height:auto;}
+</style>
+</head>
+<body>
+
+<div class="main">
+<div class="sidebar">
+<h3>Upload</h3>
+<input type="file" id="upload">
+
+<h3>Zoom</h3>
+<input type="range" id="zoom" min="20" max="500" value="100">
+
+<h3>Actions</h3>
+Width(cm)<input type="number" id="wCM" value="3">
+Height(cm)<input type="number" id="hCM" value="3.5">
+<button onclick="startSelect()">Select</button>
+<button onclick="fitToSize()">Fit to Size</button>
+<button onclick="applyCrop()">Crop</button>
+
+<h3>Border</h3>
+<input type="color" id="bColor" value="#ffffff" style="width:48%; display:inline-block;">
+<input type="number" id="bSize" value="3" style="width:48%; display:inline-block;">
+<button onclick="addBorder()" style="padding:4px;font-size:12px;">Add Border</button>
+
+<h3>Adjust</h3>
+Brightness <input type="range" id="brightness" min="50" max="200" value="100">
+Contrast <input type="range" id="contrast" min="50" max="200" value="100">
+Saturation <input type="range" id="saturation" min="0" max="200" value="100">
+<button onclick="resetColor()">Default Color</button>
+
+<button onclick="undo()">Undo</button>
+<button onclick="downloadPDF()">Download PDF</button>
+<button onclick="clearSheet()">Clear Sheet</button>
+<button onclick="printCanvas()">Print Sheet</button>
+</div>
+
+<div class="editor">
+<canvas id="canvas" width="500" height="600"></canvas>
+</div>
+
+<div class="sheetBox">
+<h3>4×6 Sheet</h3>
+<canvas id="sheetCanvas" width="1200" height="1800"></canvas>
+<button onclick="addToSheet()">Add to Sheet</button>
+</div>
+</div>
+
+<script>
+const canvas=document.getElementById("canvas");
+const ctx=canvas.getContext("2d");
+const sheetCanvas=document.getElementById("sheetCanvas");
+const sctx=sheetCanvas.getContext("2d");
+
+let img=new Image();
+let originalImg=new Image();
+let history=[];
+let drawX,drawY,drawW,drawH;
+let selecting=false, locked=false;
+let crop={x:100,y:100,w:150,h:200};
+let mode=null, zoomLevel=1;
+
+// ===== SAVE STATE =====
+function saveState(){history.push(img.src);}
+function undo(){if(history.length>0){img.src=history.pop();draw();}}
+
+// ===== CM → PX =====
+function cmToPx(cm){ return Math.round((cm/2.54)*300); } // 300 DPI
+
+// ===== UPLOAD =====
+upload.onchange=e=>{
+    let r=new FileReader();
+    r.onload=ev=>{
+        img.onload=draw;
+        img.src=ev.target.result;
+        originalImg.src=ev.target.result; 
+        history=[];
+    };
+    r.readAsDataURL(e.target.files[0]);
+};
+
+// ===== DRAW =====
+function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    if(!img.width) return;
+    let r=img.width/img.height;
+    let cr=canvas.width/canvas.height;
+    if(r>cr){drawW=canvas.width;drawH=canvas.width/r;}
+    else{drawH=canvas.height;drawW=canvas.height*r;}
+    drawW*=zoomLevel;
+    drawH*=zoomLevel;
+    drawX=(canvas.width-drawW)/2;
+    drawY=(canvas.height-drawH)/2 - 10; // উঁচু করার জন্য 10px উপরে
+
+    ctx.imageSmoothingEnabled=true;
+    ctx.imageSmoothingQuality="high";
+    ctx.filter=`brightness(${brightness.value}%) contrast(${contrast.value}%) saturate(${saturation.value}%)`;
+    ctx.drawImage(img,drawX,drawY,drawW,drawH);
+    ctx.filter="none";
+
+    if(selecting){
+        ctx.strokeStyle = "black";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(crop.x,crop.y,crop.w,crop.h);
+    }
+}
+
+// ===== SELECT =====
+function startSelect(){
+    selecting = true;
+    locked = false;        
+    crop = {x:100,y:100,w:150,h:200};
+    draw();
+}
+
+// ===== MOUSE EVENTS =====
+canvas.onmousedown = e => {
+    const x=e.offsetX, y=e.offsetY;
+    if(!selecting) return;
+    if(locked && x>crop.x && x<crop.x+crop.w && y>crop.y && y<crop.y+crop.h){
+        mode="move";
+    } else {
+        crop.x = x; crop.y = y; crop.w = 0; crop.h = 0;
+        mode = "draw";
+        locked = false;
+    }
+};
+canvas.onmousemove = e => {
+    const x=e.offsetX, y=e.offsetY;
+    if(!selecting || !mode) return;
+    if(mode==="draw" && !locked){
+        crop.w = x - crop.x;
+        crop.h = y - crop.y;
+    }
+    if(mode==="move" && locked){
+        crop.x = x - crop.w/2;
+        crop.y = y - crop.h/2;
+    }
+    draw();
+};
+canvas.onmouseup = ()=>{mode=null;};
+
+// ===== FIT SIZE =====
+function fitToSize(){
+    if(!selecting){alert("Select first"); return;}
+    let targetW=cmToPx(wCM.value);
+    let targetH=cmToPx(hCM.value);
+    let scaleX=drawW/img.width;
+    let scaleY=drawH/img.height;
+    let newW=targetW*scaleX;
+    let newH=targetH*scaleY;
+    crop.x+=(crop.w-newW)/2;
+    crop.y+=(crop.h-newH)/2;
+    crop.w=newW;
+    crop.h=newH;
+    locked=true;
+    draw();
+}
+
+// ===== CROP =====
+function applyCrop(){
+    saveState();
+    let sx=(crop.x-drawX)*(img.width/drawW);
+    let sy=(crop.y-drawY)*(img.height/drawH);
+    let sw=crop.w*(img.width/drawW);
+    let sh=crop.h*(img.height/drawH);
+    let w=cmToPx(wCM.value);
+    let h=cmToPx(hCM.value);
+
+    let t=document.createElement("canvas");
+    t.width=w; t.height=h;
+    let tctx=t.getContext("2d");
+    tctx.imageSmoothingEnabled=true;
+    tctx.imageSmoothingQuality="high";
+
+    tctx.drawImage(img,sx,sy,sw,sh,0,0,w,h);
+    img.src=t.toDataURL("image/png");
+    draw();
+    selecting=false;
+}
+
+// ===== BORDER =====
+function addBorder(){
+    saveState();
+    let t=parseInt(bSize.value);
+    let temp=document.createElement("canvas");
+    temp.width=img.width+t*2;
+    temp.height=img.height+t*2;
+    let tctx=temp.getContext("2d");
+
+    tctx.fillStyle=bColor.value;
+    tctx.fillRect(0,0,temp.width,temp.height);
+
+    tctx.drawImage(img,t,t);
+    img.src=temp.toDataURL("image/png");
+    draw();
+}
+
+// ===== RESET COLOR =====
+function resetColor(){
+    img.src = originalImg.src;
+    draw();
+}
+
+// ===== ADD TO SHEET =====
+function addToSheet(){
+    const dpi=300;
+    const sheetW=4*dpi;
+    const sheetH=6*dpi;
+    sheetCanvas.width=sheetW;
+    sheetCanvas.height=sheetH;
+    sctx.clearRect(0,0,sheetW,sheetH);
+    sctx.imageSmoothingEnabled=true;
+    sctx.imageSmoothingQuality="high";
+
+    let temp=document.createElement("canvas");
+    temp.width=img.width;
+    temp.height=img.height;
+    let tctx=temp.getContext("2d");
+    tctx.imageSmoothingEnabled=true;
+    tctx.imageSmoothingQuality="high";
+    tctx.filter=`brightness(${brightness.value}%) contrast(${contrast.value}%) saturate(${saturation.value}%)`;
+    tctx.drawImage(img,0,0,img.width,img.height);
+    tctx.filter="none";
+
+    let im=new Image();
+    im.src=temp.toDataURL("image/png");
+    im.onload=()=>{
+        let photoW=cmToPx(wCM.value);
+        let photoH=cmToPx(hCM.value);
+        let paddingX=(sheetW - 3*photoW)/4;
+        let paddingY=(sheetH - 3*photoH)/4;
+        for(let r=0;r<3;r++){
+            for(let c=0;c<3;c++){
+                let x=paddingX + c*(photoW + paddingX);
+                let y=paddingY + r*(photoH + paddingY);
+                sctx.drawImage(im,x,y,photoW,photoH);
+            }
+        }
+    };
+}
+
+// ===== CLEAR SHEET =====
+function clearSheet(){sctx.clearRect(0,0,sheetCanvas.width,sheetCanvas.height);}
+
+// ===== PDF =====
+function downloadPDF(){
+    const {jsPDF}=window.jspdf;
+    let pdf=new jsPDF({unit:"px",format:[sheetCanvas.width,sheetCanvas.height]});
+    pdf.addImage(sheetCanvas.toDataURL("image/png",1.0),"PNG",0,0,sheetCanvas.width,sheetCanvas.height);
+    pdf.save("4x6_300DPI_9copy.pdf");
+}
+
+// ===== PRINT =====
+function printCanvas(){
+    const dataUrl = sheetCanvas.toDataURL("image/png");
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(`
+        <html>
+        <head>
+        <title>Print Sheet</title>
+        <style>
+            body { margin: 0; padding: 0; }
+            img { width: 100%; height: auto; }
+        </style>
+        </head>
+        <body>
+            <img src="${dataUrl}" onload="window.print(); window.close();">
+        </body>
+        </html>
+    `);
+    printWindow.document.close();
+}
+
+// ===== CONTROLS =====
+zoom.oninput=()=>{zoomLevel=zoom.value/100;draw();}
+brightness.oninput=draw;
+contrast.oninput=draw;
+saturation.oninput=draw;
+
+// ===== MOUSE WHEEL ZOOM =====
+canvas.addEventListener('wheel', e=>{
+    e.preventDefault();
+    let delta = e.deltaY < 0 ? 10 : -10;
+    zoomLevel += delta/100;
+    if(zoomLevel<0.2) zoomLevel=0.2;
+    if(zoomLevel>5) zoomLevel=5;
+    zoom.value = zoomLevel*100;
+    draw();
+});
+</script>
+</body>
+</html>
